@@ -1,0 +1,303 @@
+{
+  "schema_version": 1,
+  "tiers": {
+    "clean_max": 19,
+    "review_max": 49,
+    "suspicious_max": 79,
+    "malicious_min": 80
+  },
+  "signals": {
+    "defender_hit": {
+      "weight": 100,
+      "description": "Microsoft Defender or Microsoft Safety Scanner flagged this file or threat"
+    },
+    "trace_paste_exec": {
+      "weight": 60,
+      "description": "RunMRU or PowerShell history contains a pasted download-and-execute command"
+    },
+    "system_name_wrong_dir": {
+      "weight": 40,
+      "description": "Executable is named like a Windows system binary outside Windows directories"
+    },
+    "lolbin_remote": {
+      "weight": 40,
+      "description": "Command line invokes a living-off-the-land binary with an encoded command, URL, or temp script"
+    },
+    "covered_by_exclusion": {
+      "weight": 35,
+      "description": "Target path falls under a Microsoft Defender exclusion"
+    },
+    "forced_extension": {
+      "weight": 35,
+      "description": "Browser extension is force-installed by policy on an unmanaged machine"
+    },
+    "sig_invalid": {
+      "weight": 35,
+      "description": "Authenticode or code signature is invalid, revoked, expired, or hash-mismatched"
+    },
+    "user_writable_path": {
+      "weight": 25,
+      "description": "Target resides in a user-writable directory (AppData, Temp, ProgramData, Public, Downloads, Recycle Bin)"
+    },
+    "unsigned": {
+      "weight": 20,
+      "description": "Executable or script has no Authenticode signature"
+    },
+    "double_extension": {
+      "weight": 20,
+      "description": "Filename uses a deceptive double extension such as .pdf.exe"
+    },
+    "hidden_or_system_attr": {
+      "weight": 15,
+      "description": "File has Hidden/System attributes or scheduled task is marked Hidden"
+    },
+    "recent": {
+      "weight": 10,
+      "description": "File or entry was created within the --since lookback window"
+    },
+    "orphan": {
+      "weight": 5,
+      "description": "Persistence entry points to a file that no longer exists"
+    },
+    "hijack_debugger": {
+      "weight": 60,
+      "description": "Image File Execution Options Debugger hijack is configured"
+    },
+    "hijack_winlogon": {
+      "weight": 65,
+      "description": "Winlogon Shell or Userinit differs from the Windows default"
+    },
+    "hijack_appinit": {
+      "weight": 55,
+      "description": "AppInit_DLLs injection is configured"
+    },
+    "hijack_bootexecute": {
+      "weight": 65,
+      "description": "Session Manager BootExecute contains non-standard entries"
+    },
+    "wmi_persistence": {
+      "weight": 35,
+      "description": "Permanent WMI event subscription present in root\\subscription"
+    },
+    "untrusted_root_cert": {
+      "weight": 55,
+      "description": "Root CA certificate is not in the Microsoft Trusted Root Program list"
+    },
+    "defender_disabled_policy": {
+      "weight": 60,
+      "description": "Microsoft Defender protection is disabled by policy without another active antivirus"
+    },
+    "defender_exclusion_risky": {
+      "weight": 55,
+      "description": "Defender exclusion covers a broad drive, executable extension, or user-writable folder"
+    },
+    "defender_exclusion_custom": {
+      "weight": 25,
+      "description": "Custom Defender exclusion configured"
+    },
+    "browser_policy_unmanaged": {
+      "weight": 30,
+      "description": "Browser policy overrides homepage, startup, or search on a non-domain, non-MDM machine"
+    },
+    "browser_notification_spam": {
+      "weight": 20,
+      "description": "Site is granted browser notification permission"
+    },
+    "browser_sideloaded_extension": {
+      "weight": 30,
+      "description": "Browser extension was sideloaded or unpacked outside the official web store"
+    },
+    "proxy_configured": {
+      "weight": 25,
+      "description": "Manual proxy server or PAC auto-configuration URL is active"
+    },
+    "hosts_modified": {
+      "weight": 25,
+      "description": "Non-localhost entry present in the system hosts file"
+    },
+    "hosts_security_block": {
+      "weight": 55,
+      "description": "Hosts file blocks or redirects Microsoft, Windows Update, or security vendor domains"
+    },
+    "remote_access_tool": {
+      "weight": 25,
+      "description": "Known remote-access tool is installed (verify you recognize it)"
+    },
+    "known_bundleware": {
+      "weight": 35,
+      "description": "Known adware, bundleware, or potentially unwanted program is installed"
+    },
+    "mac_unsigned_or_adhoc": {
+      "weight": 25,
+      "description": "macOS binary is unsigned or ad-hoc signed"
+    },
+    "mac_not_notarized": {
+      "weight": 20,
+      "description": "macOS binary is not notarized by Apple"
+    },
+    "mac_user_writable_or_hidden": {
+      "weight": 25,
+      "description": "macOS target lives in a hidden, temp, or user-writable path"
+    },
+    "mac_random_label": {
+      "weight": 20,
+      "description": "Launch item label appears random or non-standard"
+    },
+    "mac_shell_curl_pipe": {
+      "weight": 45,
+      "description": "Launch item or cron entry invokes a shell/script with network download or encoded payload"
+    },
+    "mac_suspicious_profile": {
+      "weight": 65,
+      "description": "Configuration profile sets browser homepage, search, extensions, proxy, or DNS on an unmanaged Mac"
+    },
+    "mac_posture_weakened": {
+      "weight": 55,
+      "description": "macOS Gatekeeper or System Integrity Protection (SIP) is disabled"
+    }
+  },
+  "system_binary_names": [
+    "svchost.exe",
+    "lsass.exe",
+    "csrss.exe",
+    "smss.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "services.exe",
+    "explorer.exe",
+    "dwm.exe",
+    "taskhostw.exe",
+    "taskhost.exe",
+    "conhost.exe",
+    "spoolsv.exe",
+    "sihost.exe",
+    "ctfmon.exe",
+    "runtimebroker.exe",
+    "searchindexer.exe",
+    "dllhost.exe",
+    "msiexec.exe",
+    "wuauclt.exe",
+    "smartscreen.exe",
+    "securityhealthservice.exe",
+    "msmpeng.exe",
+    "nissrv.exe",
+    "audiodg.exe",
+    "fontdrvhost.exe",
+    "lsm.exe",
+    "wmiprvse.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "cmd.exe",
+    "powershell.exe",
+    "conhost.exe",
+    "werfault.exe",
+    "taskmgr.exe",
+    "msiexec.exe"
+  ],
+  "lolbins": [
+    "powershell.exe",
+    "powershell",
+    "pwsh.exe",
+    "pwsh",
+    "mshta.exe",
+    "mshta",
+    "rundll32.exe",
+    "rundll32",
+    "regsvr32.exe",
+    "regsvr32",
+    "wscript.exe",
+    "wscript",
+    "cscript.exe",
+    "cscript",
+    "bitsadmin.exe",
+    "bitsadmin",
+    "certutil.exe",
+    "certutil",
+    "curl.exe",
+    "curl"
+  ],
+  "double_extension_decoys": [
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".txt",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".mp3",
+    ".mp4",
+    ".zip",
+    ".rar",
+    ".iso",
+    ".html",
+    ".htm"
+  ],
+  "executable_extensions": [
+    ".exe",
+    ".scr",
+    ".com",
+    ".bat",
+    ".cmd",
+    ".vbs",
+    ".vbe",
+    ".js",
+    ".jse",
+    ".wsf",
+    ".wsh",
+    ".hta",
+    ".ps1",
+    ".msi",
+    ".pif",
+    ".lnk"
+  ],
+  "security_domains": [
+    "windowsupdate.com",
+    "update.microsoft.com",
+    "microsoft.com",
+    "defender.microsoft.com",
+    "wdcp.microsoft.com",
+    "malwarebytes.com",
+    "virustotal.com",
+    "kaspersky.com",
+    "bitdefender.com",
+    "norton.com",
+    "mcafee.com",
+    "avast.com",
+    "avg.com",
+    "eset.com",
+    "sophos.com",
+    "crowdstrike.com",
+    "sentinelone.com"
+  ],
+  "infostealer_patterns": [
+    "redline",
+    "raccoon",
+    "lumma",
+    "vidar",
+    "stealc",
+    "infostealer",
+    "stealer",
+    "psw:",
+    "pws:",
+    "browserstealer",
+    "asyncrat",
+    "agenttesla",
+    "formbook",
+    "snakekeylogger",
+    "risepro",
+    "metastealer",
+    "amadey",
+    "remcos",
+    "njrat",
+    "darkcomet",
+    "quasar",
+    "lokibot",
+    "azorult",
+    "keylogger"
+  ]
+}

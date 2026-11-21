@@ -1,0 +1,34 @@
+{
+  "name": "fcsweep",
+  "version": "0.1.0",
+  "description": "FoFo Care Sweep — standalone deterministic malware, adware, and browser hijack cleanup CLI for Windows 10/11 and macOS",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sweet-Papa-Technologies/FoFo-Sweeper.git"
+  },
+  "bin": {
+    "fcsweep": "./dist/bundle.cjs"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "build": "npm run typecheck && npm run build:bundle",
+    "build:sea": "npm run build:bundle && node scripts/build-sea.mjs",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "clean": "node -e \"const fs=require('fs');['dist','.node-cache'].forEach(p=>{try{fs.rmSync(p,{recursive:true,force:true})}catch{}})\""
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.2",
+    "postject": "^1.0.0-alpha.6",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,345 @@
+name: Release
+
+# Push a version tag on main (e.g. `git tag -a v0.1.0 -m "fcsweep v0.1.0" && git push origin v0.1.0`)
+# to build, sign, notarize, smoke-test, and attach binaries to a DRAFT GitHub Release:
+#   - Windows (x64)               — Azure Trusted Signing (OIDC) Authenticode-signed fcsweep.exe + zip
+#   - macOS Apple Silicon (arm64) — Apple Developer ID signed + notarized fcsweep zip
+#   - macOS Intel (x64)           — Apple Developer ID signed + notarized fcsweep zip
+#
+# Signing credentials (configured via scripts/setup-ci.sh):
+#   macOS    secrets: APPLE_CERT_P12, APPLE_CERT_PASSWORD, APPLE_TEAM_ID,
+#                     ASC_KEY_P8, ASC_KEY_ID, ASC_ISSUER_ID
+#   Windows  variables: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#            environment: `release` (trusted by Azure AD OIDC federated credential)
+# Missing credentials degrade cleanly to an unsigned build with a warning.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build/re-publish (e.g. v0.1.0)"
+        required: true
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  meta:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - id: v
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+            || { echo "::error::$TAG is not a vX.Y.Z[-pre] tag"; exit 1; }
+          SHA=$(git rev-parse HEAD)
+          git fetch --quiet origin main
+          git merge-base --is-ancestor "$SHA" origin/main \
+            || { echo "::error::$TAG ($SHA) is not on main — releases are cut from main only"; exit 1; }
+          VERSION="${TAG#v}"
+          PRE=false; [[ "$VERSION" == *-* ]] && PRE=true
+          { echo "tag=$TAG"; echo "version=$VERSION"; echo "prerelease=$PRE"; echo "sha=$SHA"; } >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG ($VERSION, prerelease=$PRE) from $SHA"
+
+  macos:
+    name: macOS (${{ matrix.label }})
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, arch: arm64, label: Apple Silicon }
+          - { runner: macos-15-intel, arch: x64, label: Intel }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ needs.meta.outputs.sha }}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Sync version & build SEA binary
+        run: |
+          set -euo pipefail
+          npm ci
+          node scripts/set-version.mjs "${{ needs.meta.outputs.version }}"
+          npm run build:sea
+
+      - name: Import Developer ID certificate
+        id: cert
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_CERT_P12:-}" ]; then
+            echo "::warning::no APPLE_CERT_P12 secret — macOS build will remain ad-hoc signed"
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          PASS=$(openssl rand -hex 24)
+          security create-keychain -p "$PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASS" "$KEYCHAIN"
+          printf '%s' "$APPLE_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          ID=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
+          [ -n "$ID" ] || { echo "::error::certificate holds no Developer ID Application identity"; exit 1; }
+          echo "identity=$ID" >> "$GITHUB_OUTPUT"
+          echo "Signing as: $ID"
+
+      - name: Sign macOS binary (Developer ID + Hardened Runtime)
+        if: steps.cert.outputs.identity != ''
+        env:
+          IDENTITY: ${{ steps.cert.outputs.identity }}
+        run: |
+          set -euo pipefail
+          codesign --force --options runtime --timestamp \
+            --entitlements scripts/entitlements.mac.plist \
+            --sign "$IDENTITY" dist/fcsweep
+          codesign --verify --strict --verbose=2 dist/fcsweep
+
+      - name: Package & notarize zip
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          IDENTITY: ${{ steps.cert.outputs.identity }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-dist
+          ZIP="release-dist/fcsweep-${VERSION}-macos-${ARCH}.zip"
+          ditto -c -k --keepParent dist/fcsweep "$ZIP"
+          if [ -n "${ASC_KEY_P8:-}" ] && [ -n "${IDENTITY:-}" ]; then
+            printf '%s' "$ASC_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+            xcrun notarytool submit "$ZIP" \
+              --key "$RUNNER_TEMP/AuthKey.p8" \
+              --key-id "$ASC_KEY_ID" \
+              --issuer "$ASC_ISSUER_ID" \
+              --wait --timeout 60m
+            rm -f "$RUNNER_TEMP/AuthKey.p8"
+          else
+            echo "::warning::no notarization credential — macOS archive will not be notarized"
+          fi
+          ls -lh release-dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "macos-${{ matrix.arch }}"
+          path: release-dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows (x64)
+    needs: meta
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ needs.meta.outputs.sha }}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Sync version & build SEA binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          node scripts/set-version.mjs "${{ needs.meta.outputs.version }}"
+          npm run build:sea
+
+      - name: Azure login (OIDC)
+        id: az
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Microsoft sign tool
+        if: steps.az.outcome == 'success'
+        shell: bash
+        run: dotnet tool install --global sign --prerelease
+
+      - name: Sign fcsweep.exe via Azure Trusted Signing
+        if: steps.az.outcome == 'success'
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts/sign-windows.ps1 -Path dist/fcsweep.exe -Description "FoFo Care Sweep"
+
+      - name: Warn if unsigned
+        if: steps.az.outcome != 'success'
+        shell: bash
+        run: echo "::warning::no Azure OIDC login — Windows binary will be unsigned"
+
+      - name: Collect artifacts
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path release-dist | Out-Null
+          $exeOut = "release-dist/fcsweep-$($env:VERSION)-windows-x64.exe"
+          Copy-Item dist/fcsweep.exe $exeOut
+          $stage = Join-Path $env:RUNNER_TEMP 'win-zip-stage'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item dist/fcsweep.exe (Join-Path $stage 'fcsweep.exe')
+          Copy-Item data/rules.json (Join-Path $stage 'rules.json')
+          Copy-Item data/triage-prompt.md (Join-Path $stage 'triage-prompt.md')
+          Copy-Item README.md (Join-Path $stage 'README.md')
+          Compress-Archive -Path "$stage/*" -DestinationPath "release-dist/fcsweep-$($env:VERSION)-windows-x64.zip" -Force
+          Get-ChildItem release-dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: release-dist/*
+          if-no-files-found: error
+
+  smoke-macos:
+    name: Smoke test · macOS (${{ matrix.label }})
+    needs: [meta, macos]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, arch: arm64, label: Apple Silicon }
+          - { runner: macos-15-intel, arch: x64, label: Intel }
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: "macos-${{ matrix.arch }}"
+          path: dist
+      - name: Verify signature and run read-only scan
+        run: |
+          set -euo pipefail
+          ditto -x -k dist/*.zip unpacked
+          BIN="./unpacked/fcsweep"
+          chmod +x "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+          "$BIN" --version
+          TMP_ROOT=$(mktemp -d)
+          set +e
+          "$BIN" scan --only posture,network --session-root "$TMP_ROOT" --json > "$TMP_ROOT/out.ndjson"
+          CODE=$?
+          set -e
+          [ "$CODE" -eq 0 ] || [ "$CODE" -eq 2 ]
+          grep -q '"event":"done"' "$TMP_ROOT/out.ndjson"
+
+  smoke-windows:
+    name: Smoke test · Windows (${{ matrix.runner }})
+    needs: [meta, windows]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: dist
+      - name: Verify binary and run read-only scan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Get-ChildItem dist\fcsweep-*-windows-x64.exe | Select-Object -First 1).FullName
+          $sig = Get-AuthenticodeSignature $exe
+          Write-Host "Authenticode status: $($sig.Status) ($($sig.SignerCertificate.Subject))"
+          & $exe --version
+          $tmpRoot = Join-Path $env:RUNNER_TEMP 'smoke-win'
+          New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
+          $outFile = Join-Path $tmpRoot 'events.ndjson'
+          & $exe scan --defender none --only network,traces --session-root $tmpRoot --json | Out-File -Encoding utf8 $outFile
+          $code = $LASTEXITCODE
+          if ($code -ne 0 -and $code -ne 2) { throw "Unexpected exit code: $code" }
+          if (-not (Select-String -Path $outFile -Pattern '"event":"done"' -Quiet)) {
+            throw "Missing done event"
+          }
+
+  publish:
+    name: Draft Release
+    needs: [meta, macos, windows, smoke-macos, smoke-windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: "${{ needs.meta.outputs.sha }}"
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-dist
+          pattern: "{macos-*,windows}"
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: release-dist
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or update Draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          PRE: ${{ needs.meta.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<EOF
+          ## FoFo Care Sweep (\`fcsweep\`) $VERSION
+
+          Standalone zero-dependency deterministic malware, adware, and browser hijack cleanup CLI for Windows 10/11 (full scan, fix, verify, undo, harden, Defender control) and macOS (read-only scan).
+
+          ### Downloads
+          | Platform | File | Signing |
+          | --- | --- | --- |
+          | **Windows (x64, standalone)** | \`fcsweep-$VERSION-windows-x64.exe\` | Azure Trusted Signing Authenticode |
+          | **Windows (x64, bundle)** | \`fcsweep-$VERSION-windows-x64.zip\` | Azure Trusted Signing Authenticode |
+          | **macOS (Apple Silicon)** | \`fcsweep-$VERSION-macos-arm64.zip\` | Apple Developer ID Signed & Notarized |
+          | **macOS (Intel)** | \`fcsweep-$VERSION-macos-x64.zip\` | Apple Developer ID Signed & Notarized |
+
+          ---
+          Verify downloads with \`SHA256SUMS.txt\`.
+          EOF
+
+          FLAGS=(--draft --title "FoFo Care Sweep $TAG" --notes-file notes.md --verify-tag)
+          [ "$PRE" = true ] && FLAGS+=(--prerelease)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-dist/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" release-dist/* "${FLAGS[@]}"
+          fi
+          gh release view "$TAG"

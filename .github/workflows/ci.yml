@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test & Typecheck (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:bundle
+
+  sea-smoke:
+    name: SEA Binary Smoke (${{ matrix.label }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, label: macOS arm64, is_win: false }
+          - { runner: windows-latest, label: Windows x64, is_win: true }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:sea
+      - name: Smoke test macOS SEA binary
+        if: ${{ !matrix.is_win }}
+        run: |
+          set -euo pipefail
+          ./dist/fcsweep --version
+          ./dist/fcsweep --help >/dev/null
+          TMP_ROOT=$(mktemp -d)
+          set +e
+          ./dist/fcsweep scan --only posture,network --session-root "$TMP_ROOT" --json > "$TMP_ROOT/events.ndjson"
+          CODE=$?
+          set -e
+          echo "scan exit code: $CODE"
+          [ "$CODE" -eq 0 ] || [ "$CODE" -eq 2 ]
+          grep -q '"event":"done"' "$TMP_ROOT/events.ndjson"
+          ./dist/fcsweep sessions --session-root "$TMP_ROOT"
+      - name: Smoke test Windows SEA binary
+        if: ${{ matrix.is_win }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\dist\fcsweep.exe --version
+          .\dist\fcsweep.exe --help | Out-Null
+          $tmpRoot = Join-Path $env:RUNNER_TEMP 'fcsweep-smoke'
+          New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
+          $eventsFile = Join-Path $tmpRoot 'events.ndjson'
+          .\dist\fcsweep.exe scan --defender none --only network,traces --session-root $tmpRoot --json | Out-File -Encoding utf8 $eventsFile
+          $code = $LASTEXITCODE
+          Write-Host "scan exit code: $code"
+          if ($code -ne 0 -and $code -ne 2) { throw "Unexpected scan exit code: $code" }
+          if (-not (Select-String -Path $eventsFile -Pattern '"event":"done"' -Quiet)) {
+            throw "Missing done event in NDJSON output"
+          }
+          .\dist\fcsweep.exe sessions --session-root $tmpRoot
