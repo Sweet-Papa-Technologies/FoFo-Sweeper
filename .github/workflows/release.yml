@@ -134,8 +134,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-dist
+          STAGE="$RUNNER_TEMP/mac-pkg"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp -p dist/fcsweep "$STAGE/fcsweep"
           ZIP="release-dist/fcsweep-${VERSION}-macos-${ARCH}.zip"
-          ditto -c -k --keepParent dist/fcsweep "$ZIP"
+          ditto -c -k --sequesterRsrc "$STAGE" "$ZIP"
           if [ -n "${ASC_KEY_P8:-}" ] && [ -n "${IDENTITY:-}" ]; then
             printf '%s' "$ASC_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
             xcrun notarytool submit "$ZIP" \
@@ -274,15 +278,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
           $exe = (Get-ChildItem dist\fcsweep-*-windows-x64.exe | Select-Object -First 1).FullName
           $sig = Get-AuthenticodeSignature $exe
           Write-Host "Authenticode status: $($sig.Status) ($($sig.SignerCertificate.Subject))"
           & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "--version failed with exit $LASTEXITCODE" }
           $tmpRoot = Join-Path $env:RUNNER_TEMP 'smoke-win'
           New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
           $outFile = Join-Path $tmpRoot 'events.ndjson'
           & $exe scan --defender none --only network,traces --session-root $tmpRoot --json | Out-File -Encoding utf8 $outFile
           $code = $LASTEXITCODE
+          Write-Host "scan exit code: $code"
           if ($code -ne 0 -and $code -ne 2) { throw "Unexpected exit code: $code" }
           if (-not (Select-String -Path $outFile -Pattern '"event":"done"' -Quiet)) {
             throw "Missing done event"

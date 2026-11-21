@@ -63,7 +63,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
           .\dist\fcsweep.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "--version failed with exit $LASTEXITCODE" }
           .\dist\fcsweep.exe --help | Out-Null
           $tmpRoot = Join-Path $env:RUNNER_TEMP 'fcsweep-smoke'
           New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
