@@ -294,6 +294,7 @@ jobs:
           if (-not (Select-String -Path $outFile -Pattern '"event":"done"' -Quiet)) {
             throw "Missing done event"
           }
+          exit 0
 
   publish:
     name: Draft Release

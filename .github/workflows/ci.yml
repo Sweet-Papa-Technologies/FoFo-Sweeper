@@ -78,3 +78,4 @@ jobs:
             throw "Missing done event in NDJSON output"
           }
           .\dist\fcsweep.exe sessions --session-root $tmpRoot
+          exit 0
