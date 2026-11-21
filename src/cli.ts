@@ -2,12 +2,14 @@ import { DEFAULT_SINCE_DAYS, EXIT_CODES, SESSION_RETENTION_DAYS, VERSION, type E
 import { runDefenderCommand } from './commands/defender.js';
 import { runFixCommand } from './commands/fix.js';
 import { runHardenCommand } from './commands/harden.js';
+import { runReportCommand } from './commands/report.js';
 import { runScanCommand } from './commands/scan.js';
 import { runSessionsCommand } from './commands/sessions.js';
 import { runTriageExportCommand, runTriageImportCommand } from './commands/triage.js';
 import { runUndoCommand } from './commands/undo.js';
 import { runVerifyCommand } from './commands/verify.js';
 import { EventBus } from './output/events.js';
+import type { ReportFormat } from './output/report-writer.js';
 import type { GlobalOptions } from './types.js';
 
 export interface ParsedCli {
@@ -31,6 +33,7 @@ const VALUE_FLAGS = new Set([
   '--item',
   '--out',
   '--days',
+  '--format',
 ]);
 
 export function parseArgv(argv: string[]): ParsedCli {
@@ -91,6 +94,21 @@ export function parseArgv(argv: string[]): ParsedCli {
         .filter(Boolean)
     : undefined;
 
+  let reportFormat: ReportFormat = 'both';
+  if (typeof flags['--format'] === 'string') {
+    const fmt = flags['--format'].toLowerCase();
+    if (fmt !== 'both' && fmt !== 'html' && fmt !== 'md') {
+      throw new Error(`Invalid --format "${fmt}". Use both, html, or md.`);
+    }
+    reportFormat = fmt;
+  } else if (flags['--html'] === true) {
+    reportFormat = 'html';
+  }
+
+  let color: boolean | undefined;
+  if (flags['--no-color'] === true) color = false;
+  else if (flags['--color'] === true) color = true;
+
   const globalOpts: GlobalOptions = {
     session: typeof flags['--session'] === 'string' ? flags['--session'] : undefined,
     json: flags['--json'] === true,
@@ -99,6 +117,9 @@ export function parseArgv(argv: string[]): ParsedCli {
     since: sinceRaw,
     quiet: flags['--quiet'] === true,
     rulesPath: typeof flags['--rules'] === 'string' ? flags['--rules'] : undefined,
+    reportFormat,
+    openReport: flags['--open'] === true,
+    color,
   };
 
   return {
@@ -113,30 +134,36 @@ export function parseArgv(argv: string[]): ParsedCli {
 }
 
 export function formatHelpText(): string {
-  return `FoFo Care Sweep (fcsweep) v${VERSION}
+  return `🧹 FoFo Care Sweep (fcsweep) v${VERSION}
 Standalone deterministic malware, adware, and browser hijack cleanup CLI.
+100% free · Zero telemetry · Every remediation change is reversible.
 
 USAGE:
   fcsweep <command> [options]
 
 COMMANDS:
-  scan                    Read-only inspection, scoring, and report (default --defender quick)
-  triage export           Export review/suspicious findings bundle for out-of-band AI triage
-  triage import <file>    Validate and apply AI triage verdicts using fixed rules
-  fix                     Apply approved actions (--interactive, --approve <id,id>, or --dry-run)
-  verify                  Re-run collectors and flag any removed items that resurrected
-  undo                    Revert a session (or one item with --item <id>) newest-first
-  harden                  Apply built-in Windows hardening settings (--revert restores prior values)
-  defender                Direct Microsoft Defender control (--status, --update, --quick, --full, --offline)
-  sessions                List sessions (--purge removes sessions older than 30 days)
+  🔍 scan                    Read-only inspection, scoring, and HTML + Markdown reports (--defender quick|full|none)
+  🌐 report                  Render or open a session's interactive HTML/Markdown report (--format, --open, --out)
+  🤖 triage export           Export review/suspicious bundle for out-of-band AI triage
+  🤖 triage import <file>    Validate and apply AI triage verdicts using fixed rules
+  🛠️  fix                     Apply approved actions (--interactive, --approve <id,id>, or --dry-run)
+  ✅ verify                  Re-run collectors and flag any removed items that resurrected
+  ⏪ undo                    Revert a session (or one item with --item <id>) newest-first
+  🔒 harden                  Apply built-in Windows hardening (--revert restores prior values)
+  🛡️  defender                Direct Microsoft Defender control (--status, --update, --quick, --full, --offline)
+  📁 sessions                List sessions (--purge removes sessions older than 30 days)
 
 GLOBAL FLAGS:
   --session <id>          Session ID (default: newest for non-scan commands)
   --session-root <path>   Override default session directory
+  --format <both|html|md> Report output format (default: both)
+  --html                  Shorthand for --format html
+  --open                  Open report.html in your default browser when done
   --json                  Emit NDJSON events on stdout (human text on stderr)
   --only <c1,c2>          Run only named collectors
   --since <days>          Lookback window for "recent" signal (default: ${DEFAULT_SINCE_DAYS})
   --rules <path>          Override bundled rules.json scoring weights
+  --color / --no-color    Force or disable ANSI colors
   --quiet                 Suppress non-error human output
   -v, --version           Print version
   -h, --help              Show this help
@@ -157,7 +184,7 @@ export async function runCli(argv: string[]): Promise<ExitCode> {
   try {
     parsed = parseArgv(argv);
   } catch (err) {
-    process.stderr.write(`ERROR: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`❌ ERROR: ${err instanceof Error ? err.message : String(err)}\n`);
     return EXIT_CODES.ERROR;
   }
 
@@ -174,6 +201,7 @@ export async function runCli(argv: string[]): Promise<ExitCode> {
   const bus = new EventBus({
     json: parsed.globalOpts.json,
     quiet: parsed.globalOpts.quiet,
+    color: parsed.globalOpts.color,
   });
 
   try {
@@ -186,6 +214,19 @@ export async function runCli(argv: string[]): Promise<ExitCode> {
           throw new Error(`Invalid --defender mode "${defenderMode}". Use quick, full, or none.`);
         }
         return await runScanCommand(parsed.globalOpts, { defenderMode }, bus);
+      }
+
+      case 'report': {
+        const outPath = typeof parsed.flags['--out'] === 'string' ? parsed.flags['--out'] : undefined;
+        return await runReportCommand(
+          parsed.globalOpts,
+          {
+            format: parsed.globalOpts.reportFormat,
+            open: parsed.globalOpts.openReport,
+            outPath,
+          },
+          bus
+        );
       }
 
       case 'triage': {

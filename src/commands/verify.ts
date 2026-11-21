@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { EXIT_CODES, type ExitCode } from '../constants.js';
+import { EXIT_CODES, VERSION, type ExitCode } from '../constants.js';
 import { resolveCollectorList, runCollectors } from '../collectors/index.js';
 import { loadRules } from '../data-loader.js';
 import type { EventBus } from '../output/events.js';
-import { renderMarkdownReport } from '../output/report.js';
+import { writeSessionReports } from '../output/report-writer.js';
 import { isElevated } from '../platform/privilege.js';
 import { evaluateAdvisoriesAndStops } from '../scoring/advisories.js';
 import {
@@ -197,7 +197,9 @@ export async function runVerifyCommand(
       ? preflight.collectors_requested
       : resolveCollectorList(platform);
 
+  bus.raw(bus.ui.banner(VERSION, `✅ Verifying Remediation · Session ${session.id}`));
   bus.emit('phase_start', { phase: 'verify', collectors });
+  bus.phase('🔍', 'Re-running Collectors', `${collectors.length} collector(s)`);
   const fresh = await runCollectors({
     platform,
     collectors,
@@ -218,22 +220,28 @@ export async function runVerifyCommand(
 
   writeJsonAtomic(verifyPath, result);
 
-  // Update report.md with verification section
+  // Update report.md & report.html with verification section
   const planPath = path.join(session.dir, 'plan.json');
   const plan = fs.existsSync(planPath) ? readJsonFile<Plan>(planPath) : null;
   const defenderPath = path.join(session.dir, 'defender.json');
   const defenderScan = fs.existsSync(defenderPath) ? readJsonFile<DefenderScanResult>(defenderPath) : null;
-  const reportMd = renderMarkdownReport({
-    sessionId: session.id,
-    preflight,
-    findings: findingsDoc.findings,
-    defenderScan,
-    advisories: plan?.advisories ?? [],
-    stopConditions: result.stop_conditions,
-    manifest,
-    verifyResult: result,
-  });
-  fs.writeFileSync(path.join(session.dir, 'report.md'), reportMd, 'utf8');
+  const snapshotPath = path.join(session.dir, 'snapshot.json');
+  const snapshot = fs.existsSync(snapshotPath) ? readJsonFile<any>(snapshotPath) : null;
+  writeSessionReports(
+    session.dir,
+    {
+      sessionId: session.id,
+      preflight,
+      findings: findingsDoc.findings,
+      snapshot,
+      defenderScan,
+      advisories: plan?.advisories ?? [],
+      stopConditions: result.stop_conditions,
+      manifest,
+      verifyResult: result,
+    },
+    globalOpts.reportFormat
+  );
 
   let exitCode: ExitCode = EXIT_CODES.OK;
   if (result.stop_conditions.length > 0) {
@@ -244,8 +252,11 @@ export async function runVerifyCommand(
     exitCode = EXIT_CODES.REBOOT_REQUIRED;
   }
 
+  bus.info('');
   bus.info(
-    `Verification complete: ${result.resurrected_count} resurrected item(s), post_reboot=${result.post_reboot}, reboot_required=${result.reboot_required}.`
+    result.resurrected_count === 0
+      ? `✅ Verification complete: 0 resurrected item(s)!${result.reboot_required ? ' 🔄 Reboot and run `fcsweep verify` once more to confirm startup persistence stays gone.' : ' ✨ Clean post-reboot check!'}`
+      : `🚨 Verification flagged ${result.resurrected_count} resurrected item(s)!${result.stop_conditions.length > 0 ? ' 🛑 Stop condition triggered — run `fcsweep defender --offline`.' : ''}`
   );
   bus.emit('done', {
     command: 'verify',

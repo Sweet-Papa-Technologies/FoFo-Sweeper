@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { EXIT_CODES, type ExitCode } from '../constants.js';
+import { EXIT_CODES, VERSION, type ExitCode } from '../constants.js';
 import type { EventBus } from '../output/events.js';
-import { renderMarkdownReport } from '../output/report.js';
+import { writeSessionReports } from '../output/report-writer.js';
 import { isElevated } from '../platform/privilege.js';
 import { executeFixPlan } from '../remediation/executor.js';
 import {
@@ -73,7 +73,14 @@ export async function runFixCommand(
     return EXIT_CODES.STOP_CONDITION;
   }
 
+  bus.raw(
+    bus.ui.banner(
+      VERSION,
+      `${cmdOpts.dryRun ? '🧪 Dry-Run Remediation Preview' : '🛠️  Applying Approved Fixes'} · Session ${session.id}`
+    )
+  );
   bus.emit('phase_start', { phase: 'fix', dry_run: cmdOpts.dryRun });
+  bus.phase(cmdOpts.dryRun ? '🧪' : '🛠️ ', cmdOpts.dryRun ? 'Dry-Run Plan Preview' : 'Applying Approved Remediation');
   const summary = await executeFixPlan({
     sessionId: session.id,
     sessionDir: session.dir,
@@ -90,24 +97,33 @@ export async function runFixCommand(
     writeJsonAtomic(planPath, plan);
     const defenderPath = path.join(session.dir, 'defender.json');
     const defenderScan = fs.existsSync(defenderPath) ? readJsonFile<DefenderScanResult>(defenderPath) : null;
+    const snapshotPath = path.join(session.dir, 'snapshot.json');
+    const snapshot = fs.existsSync(snapshotPath) ? readJsonFile<any>(snapshotPath) : null;
     const manifest = new ManifestStore(session.id, session.dir).getManifest();
-    const reportMd = renderMarkdownReport({
-      sessionId: session.id,
-      preflight,
-      findings: findingsDoc.findings,
-      defenderScan,
-      advisories: plan.advisories,
-      stopConditions: plan.stop_conditions,
-      manifest,
-    });
-    fs.writeFileSync(path.join(session.dir, 'report.md'), reportMd, 'utf8');
+    writeSessionReports(
+      session.dir,
+      {
+        sessionId: session.id,
+        preflight,
+        findings: findingsDoc.findings,
+        snapshot,
+        defenderScan,
+        advisories: plan.advisories,
+        stopConditions: plan.stop_conditions,
+        manifest,
+      },
+      globalOpts.reportFormat
+    );
   }
 
   const exitCode: ExitCode = summary.failed > 0 ? EXIT_CODES.PARTIAL_FAILURE : EXIT_CODES.OK;
+  bus.info('');
   bus.info(
     cmdOpts.dryRun
-      ? `Dry-run complete (${summary.approved_ids.length} finding(s) previewed).`
-      : `Fix complete: ${summary.applied} action(s) succeeded, ${summary.failed} failed, ${summary.skipped} skipped.`
+      ? `🧪 Dry-run complete (${summary.approved_ids.length} finding(s) previewed — nothing was changed).`
+      : summary.failed === 0
+        ? `🧹 Fix complete: ✅ ${summary.applied} swept safely, ⏭️ ${summary.skipped} skipped. Undo anytime with \`fcsweep undo --session ${session.id}\`.`
+        : `⚠️  Fix finished with partial failures: ✅ ${summary.applied} succeeded, ❌ ${summary.failed} failed, ⏭️ ${summary.skipped} skipped.`
   );
   bus.emit('done', {
     command: 'fix',

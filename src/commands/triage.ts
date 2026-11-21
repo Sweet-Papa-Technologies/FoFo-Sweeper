@@ -3,7 +3,7 @@ import path from 'node:path';
 import { EXIT_CODES, type ExitCode } from '../constants.js';
 import { loadRules } from '../data-loader.js';
 import type { EventBus } from '../output/events.js';
-import { renderMarkdownReport } from '../output/report.js';
+import { writeSessionReports } from '../output/report-writer.js';
 import { isElevated } from '../platform/privilege.js';
 import { buildPlan } from '../remediation/plan.js';
 import { evaluateAdvisoriesAndStops } from '../scoring/advisories.js';
@@ -45,7 +45,7 @@ export async function runTriageExportCommand(
     writeJsonAtomic(path.resolve(outPath), bundle);
   }
 
-  bus.info(`Exported ${bundle.items.length} review/suspicious item(s) to ${requestPath}`);
+  bus.info(`🤖 Exported ${bundle.items.length} review/suspicious item(s) to ${bus.ui.cyan(requestPath)}`);
   bus.emit('done', {
     command: 'triage export',
     session_id: session.id,
@@ -118,19 +118,25 @@ export async function runTriageImportCommand(
   });
   writeJsonAtomic(existingPlanPath, newPlan);
 
-  const reportMd = renderMarkdownReport({
-    sessionId: session.id,
-    preflight,
-    findings: updatedFindings,
-    defenderScan,
-    advisories,
-    stopConditions,
-  });
-  fs.writeFileSync(path.join(session.dir, 'report.md'), reportMd, 'utf8');
+  const snapshotPath = path.join(session.dir, 'snapshot.json');
+  const snapshot = fs.existsSync(snapshotPath) ? readJsonFile<any>(snapshotPath) : null;
+  writeSessionReports(
+    session.dir,
+    {
+      sessionId: session.id,
+      preflight,
+      findings: updatedFindings,
+      snapshot,
+      defenderScan,
+      advisories,
+      stopConditions,
+    },
+    globalOpts.reportFormat
+  );
 
   const changedCount = result.accepted.filter((a) => a.tier_changed).length;
   bus.info(
-    `Imported triage verdicts: ${result.accepted.length} accepted (${changedCount} tier change(s)), ${result.rejected.length} rejected.`
+    `🤖 Triage import complete: ✅ ${result.accepted.length} accepted (${changedCount} tier change(s)), 🚫 ${result.rejected.length} rejected.`
   );
   bus.emit('done', {
     command: 'triage import',

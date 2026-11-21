@@ -73,7 +73,7 @@ export async function executeUndo(opts: UndoOptions): Promise<UndoSummary> {
         status: 'not_reversible',
         detail: entry.inverse.description,
       });
-      bus.info(`[SKIP] ${entry.action_id} (${entry.action}): not reversible (${entry.inverse.description})`);
+      bus.raw(bus.ui.actionSkip(entry.action_id, entry.action, `not reversible (${entry.inverse.description})`));
       continue;
     }
 
@@ -88,7 +88,7 @@ export async function executeUndo(opts: UndoOptions): Promise<UndoSummary> {
         status: 'undone',
         detail,
       });
-      bus.info(`[UNDONE] ${entry.action_id} (${entry.finding_id} · ${entry.action}): ${detail}`);
+      bus.raw(bus.ui.actionUndo(entry.action_id, entry.finding_id, entry.action, detail));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       store.recordUndoOutcome(entry.action_id, 'undo_failed', msg);
@@ -101,7 +101,7 @@ export async function executeUndo(opts: UndoOptions): Promise<UndoSummary> {
         status: 'undo_failed',
         error: msg,
       });
-      bus.warn(`[UNDO FAIL] ${entry.action_id} (${entry.finding_id} · ${entry.action}): ${msg}`);
+      bus.raw(bus.ui.actionFail(entry.action_id, entry.finding_id, `undo:${entry.action}`, msg));
     }
   }
 

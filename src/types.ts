@@ -513,4 +513,7 @@ export interface GlobalOptions {
   since: number;
   quiet: boolean;
   rulesPath?: string;
+  reportFormat: 'both' | 'html' | 'md';
+  openReport: boolean;
+  color?: boolean;
 }

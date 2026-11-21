@@ -203,6 +203,9 @@ export async function runCollectors(params: {
       ...(res.error ? { error: res.error } : {}),
       ...(res.warnings.length > 0 ? { warnings: res.warnings } : {}),
     });
+
+    const rowNote = res.error || (res.warnings.length > 0 ? `${res.warnings.length} warning(s)` : undefined);
+    bus.raw(bus.ui.collectorRow(res.collector, res.status, res.item_count, res.duration_ms, rowNote));
   }
 
   return { results, allItems, defenderExclusions };

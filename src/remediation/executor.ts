@@ -300,7 +300,7 @@ export async function executeFixPlan(opts: FixExecutionOptions): Promise<FixExec
         status: 'succeeded',
         detail,
       });
-      bus.info(`[OK] ${entry.action_id} (${finding.id} · ${action}): ${detail}`);
+      bus.raw(bus.ui.actionOk(entry.action_id, finding.id, action, detail));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       manifestStore.recordOutcome(entry.action_id, 'failed', null, msg);
@@ -314,7 +314,7 @@ export async function executeFixPlan(opts: FixExecutionOptions): Promise<FixExec
         status: 'failed',
         error: msg,
       });
-      bus.warn(`[FAIL] ${entry.action_id} (${finding.id} · ${action}): ${msg}`);
+      bus.raw(bus.ui.actionFail(entry.action_id, finding.id, action, msg));
     }
   }
 

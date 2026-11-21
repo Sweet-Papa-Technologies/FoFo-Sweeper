@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { EXIT_CODES, type ExitCode } from '../constants.js';
+import { EXIT_CODES, VERSION, type ExitCode } from '../constants.js';
 import { runWindowsPreflight } from '../collectors/windows/preflight.js';
 import { runHardenApply, runHardenRevert } from '../hardening/windows-harden.js';
 import type { EventBus } from '../output/events.js';
-import { renderMarkdownReport } from '../output/report.js';
+import { writeSessionReports } from '../output/report-writer.js';
 import { isElevated } from '../platform/privilege.js';
 import {
   createSession,
@@ -39,10 +39,13 @@ export async function runHardenCommand(
   if (revert) {
     const session = resolveExistingSession(sessionRoot, globalOpts.session);
     bus.attachSession(session.id, session.dir);
+    bus.raw(bus.ui.banner(VERSION, `⏪ Reverting Windows Hardening · Session ${session.id}`));
     bus.emit('phase_start', { phase: 'harden_revert' });
+    bus.phase('⏪', 'Restoring Prior Hardening Values');
     const res = await runHardenRevert({ sessionDir: session.dir, bus });
     const exitCode: ExitCode = res.failed > 0 ? EXIT_CODES.PARTIAL_FAILURE : EXIT_CODES.OK;
-    bus.info(`Hardening revert complete: ${res.reverted} setting(s) restored, ${res.failed} failed.`);
+    bus.info('');
+    bus.info(`✅ Hardening revert complete: ⏪ ${res.reverted} restored, ❌ ${res.failed} failed.`);
     bus.emit('done', {
       command: 'harden --revert',
       session_id: session.id,
@@ -68,7 +71,9 @@ export async function runHardenCommand(
     ? readJsonFile<PreflightResult>(preflightPath)
     : await runWindowsPreflight(elevated, []);
 
+  bus.raw(bus.ui.banner(VERSION, `🔒 Windows Hardening · Session ${session.id}`));
   bus.emit('phase_start', { phase: 'harden' });
+  bus.phase('🔒', 'Applying Built-in Windows Protections', 'Every prior value is recorded for --revert');
   const { manifest: hardenManifest, failedCount } = await runHardenApply({
     sessionId: session.id,
     sessionDir: session.dir,
@@ -76,7 +81,7 @@ export async function runHardenCommand(
     bus,
   });
 
-  // Update report.md if scan artifacts exist
+  // Update report.md & report.html if scan artifacts exist
   const findingsPath = path.join(session.dir, 'findings.json');
   if (fs.existsSync(findingsPath)) {
     const findingsDoc = readJsonFile<{ findings: Finding[] }>(findingsPath);
@@ -84,19 +89,25 @@ export async function runHardenCommand(
     const plan = fs.existsSync(planPath) ? readJsonFile<Plan>(planPath) : null;
     const defenderPath = path.join(session.dir, 'defender.json');
     const defenderScan = fs.existsSync(defenderPath) ? readJsonFile<DefenderScanResult>(defenderPath) : null;
+    const snapshotPath = path.join(session.dir, 'snapshot.json');
+    const snapshot = fs.existsSync(snapshotPath) ? readJsonFile<any>(snapshotPath) : null;
     const manifestPath = path.join(session.dir, 'manifest.json');
     const fixManifest = fs.existsSync(manifestPath) ? readJsonFile<Manifest>(manifestPath) : null;
-    const reportMd = renderMarkdownReport({
-      sessionId: session.id,
-      preflight,
-      findings: findingsDoc.findings,
-      defenderScan,
-      advisories: plan?.advisories ?? [],
-      stopConditions: plan?.stop_conditions ?? [],
-      manifest: fixManifest,
-      hardenManifest,
-    });
-    fs.writeFileSync(path.join(session.dir, 'report.md'), reportMd, 'utf8');
+    writeSessionReports(
+      session.dir,
+      {
+        sessionId: session.id,
+        preflight,
+        findings: findingsDoc.findings,
+        snapshot,
+        defenderScan,
+        advisories: plan?.advisories ?? [],
+        stopConditions: plan?.stop_conditions ?? [],
+        manifest: fixManifest,
+        hardenManifest,
+      },
+      globalOpts.reportFormat
+    );
   }
 
   const exitCode: ExitCode = failedCount > 0 ? EXIT_CODES.PARTIAL_FAILURE : EXIT_CODES.OK;

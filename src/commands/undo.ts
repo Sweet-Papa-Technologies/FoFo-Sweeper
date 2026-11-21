@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { EXIT_CODES, type ExitCode } from '../constants.js';
+import { EXIT_CODES, VERSION, type ExitCode } from '../constants.js';
 import type { EventBus } from '../output/events.js';
-import { renderMarkdownReport } from '../output/report.js';
+import { writeSessionReports } from '../output/report-writer.js';
 import { isElevated } from '../platform/privilege.js';
 import { executeUndo } from '../remediation/undo.js';
 import {
@@ -53,7 +53,9 @@ export async function runUndoCommand(
   const planPath = path.join(session.dir, 'plan.json');
   const plan = fs.existsSync(planPath) ? readJsonFile<Plan>(planPath) : null;
 
+  bus.raw(bus.ui.banner(VERSION, `⏪ Reverting Changes · Session ${session.id}${itemId ? ` (item ${itemId})` : ''}`));
   bus.emit('phase_start', { phase: 'undo', item_id: itemId ?? null });
+  bus.phase('⏪', 'Replaying Inverses Newest-First');
   const summary = await executeUndo({
     sessionId: session.id,
     sessionDir: session.dir,
@@ -67,7 +69,7 @@ export async function runUndoCommand(
     writeJsonAtomic(planPath, plan);
   }
 
-  // Refresh report.md
+  // Refresh report.md & report.html
   const preflightPath = path.join(session.dir, 'preflight.json');
   const findingsPath = path.join(session.dir, 'findings.json');
   if (fs.existsSync(preflightPath) && fs.existsSync(findingsPath)) {
@@ -75,22 +77,31 @@ export async function runUndoCommand(
     const findingsDoc = readJsonFile<{ findings: Finding[] }>(findingsPath);
     const defenderPath = path.join(session.dir, 'defender.json');
     const defenderScan = fs.existsSync(defenderPath) ? readJsonFile<DefenderScanResult>(defenderPath) : null;
+    const snapshotPath = path.join(session.dir, 'snapshot.json');
+    const snapshot = fs.existsSync(snapshotPath) ? readJsonFile<any>(snapshotPath) : null;
     const manifest = new ManifestStore(session.id, session.dir).getManifest();
-    const reportMd = renderMarkdownReport({
-      sessionId: session.id,
-      preflight,
-      findings: findingsDoc.findings,
-      defenderScan,
-      advisories: plan?.advisories ?? [],
-      stopConditions: plan?.stop_conditions ?? [],
-      manifest,
-    });
-    fs.writeFileSync(path.join(session.dir, 'report.md'), reportMd, 'utf8');
+    writeSessionReports(
+      session.dir,
+      {
+        sessionId: session.id,
+        preflight,
+        findings: findingsDoc.findings,
+        snapshot,
+        defenderScan,
+        advisories: plan?.advisories ?? [],
+        stopConditions: plan?.stop_conditions ?? [],
+        manifest,
+      },
+      globalOpts.reportFormat
+    );
   }
 
   const exitCode: ExitCode = summary.failed > 0 ? EXIT_CODES.PARTIAL_FAILURE : EXIT_CODES.OK;
+  bus.info('');
   bus.info(
-    `Undo complete: ${summary.undone} reverted, ${summary.not_reversible} not reversible, ${summary.failed} failed.`
+    summary.failed === 0
+      ? `✅ Undo complete: ⏪ ${summary.undone} restored cleanly, ⏭️ ${summary.not_reversible} not reversible.`
+      : `⚠️  Undo finished with errors: ⏪ ${summary.undone} restored, ❌ ${summary.failed} failed, ⏭️ ${summary.not_reversible} not reversible.`
   );
   bus.emit('done', {
     command: 'undo',

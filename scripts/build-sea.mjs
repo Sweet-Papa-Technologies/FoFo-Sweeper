@@ -5,10 +5,22 @@
  * Requirements:
  * - Node.js 22+
  * - `npm run build:bundle` must run first (produces dist/bundle.cjs)
+ *
+ * On Windows, embeds assets/fcsweep.ico and PE VersionInfo (Product Name, Company,
+ * Description, FileVersion) BEFORE postject injects NODE_SEA_BLOB so Explorer and
+ * Properties display the FoFo Care Sweep icon and Sweet Papa Technologies metadata.
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +34,8 @@ const outputName = isWindows ? 'fcsweep.exe' : 'fcsweep';
 const outputPath = join(distDir, outputName);
 const blobPath = join(distDir, 'sea-prep.blob');
 const bundlePath = join(distDir, 'bundle.cjs');
+const icoPath = join(rootDir, 'assets', 'fcsweep.ico');
+const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'));
 
 function run(cmd, args, options = {}) {
   console.log(`> ${cmd} ${args.join(' ')}`);
@@ -57,7 +71,62 @@ function findSigntool() {
   return null;
 }
 
-function main() {
+async function embedWindowsIconAndMetadata(exePath) {
+  if (!existsSync(icoPath)) {
+    console.warn('  Warning: assets/fcsweep.ico not found; skipping Windows icon embedding');
+    return;
+  }
+  try {
+    const ResEdit = await import('resedit');
+    const exeBuf = readFileSync(exePath);
+    const exe = ResEdit.NtExecutable.from(exeBuf, { ignoreCert: true });
+    const res = ResEdit.NtExecutableResource.from(exe);
+
+    // Replace icon group #1 (Node's default icon) with FoFo Care Sweep icon
+    const iconFile = ResEdit.Data.IconFile.from(readFileSync(icoPath));
+    ResEdit.Resource.IconGroupEntry.replaceIconsForResource(
+      res.entries,
+      1,
+      1033,
+      iconFile.icons.map((item) => item.data)
+    );
+
+    // Update PE VersionInfo strings (Product Name, Company, Description, Version)
+    const verTuple = String(pkg.version || '0.1.0')
+      .split('-')[0]
+      .split('.')
+      .map((n) => Number(n) || 0);
+    while (verTuple.length < 4) verTuple.push(0);
+
+    const viList = ResEdit.Resource.VersionInfo.fromEntries(res.entries);
+    const vi = viList[0] ?? ResEdit.Resource.VersionInfo.createEmpty();
+    vi.setFileVersion(verTuple[0], verTuple[1], verTuple[2], verTuple[3], 1033);
+    vi.setProductVersion(verTuple[0], verTuple[1], verTuple[2], verTuple[3], 1033);
+    vi.setStringValues(
+      { lang: 1033, codepage: 1200 },
+      {
+        CompanyName: 'Sweet Papa Technologies',
+        FileDescription: 'FoFo Care Sweep — Malware & Adware Cleanup CLI',
+        FileVersion: `${pkg.version}`,
+        InternalName: 'fcsweep',
+        LegalCopyright: 'Copyright © 2026 Sweet Papa Technologies',
+        OriginalFilename: 'fcsweep.exe',
+        ProductName: 'FoFo Care Sweep',
+        ProductVersion: `${pkg.version}`,
+      }
+    );
+    vi.outputToResourceEntries(res.entries);
+
+    res.outputResource(exe);
+    const outBuf = Buffer.from(exe.generate());
+    writeFileSync(exePath, outBuf);
+    console.log(`  Embedded assets/fcsweep.ico and VersionInfo (${pkg.version}) into ${exePath}`);
+  } catch (err) {
+    console.warn(`  Warning: failed to embed Windows PE icon/metadata: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function main() {
   console.log(`Building fcsweep Single Executable Application (${process.platform}/${process.arch})...\n`);
 
   if (!existsSync(bundlePath)) {
@@ -66,7 +135,7 @@ function main() {
   }
 
   // 1. Generate SEA blob
-  console.log('[1/4] Generating SEA preparation blob...');
+  console.log('[1/5] Generating SEA preparation blob...');
   run(process.execPath, ['--experimental-sea-config', 'sea-config.json']);
   if (!existsSync(blobPath)) {
     console.error('Error: Failed to generate dist/sea-prep.blob');
@@ -74,14 +143,14 @@ function main() {
   }
 
   // 2. Copy Node binary
-  console.log('[2/4] Copying Node.js executable...');
+  console.log('[2/5] Copying Node.js executable...');
   if (existsSync(outputPath)) {
     unlinkSync(outputPath);
   }
   copyFileSync(process.execPath, outputPath);
 
-  // 3. Remove original Node signature before blob injection
-  console.log('[3/4] Removing existing Node.js signature...');
+  // 3. Remove original Node signature before resource editing / blob injection
+  console.log('[3/5] Removing existing Node.js signature...');
   if (isWindows) {
     const signtool = findSigntool();
     if (signtool) {
@@ -94,8 +163,16 @@ function main() {
     run('codesign', ['--remove-signature', outputPath], { ignoreError: true });
   }
 
-  // 4. Inject SEA blob via local postject
-  console.log('[4/4] Injecting SEA blob with postject...');
+  // 4. Embed Windows app icon & VersionInfo metadata (before postject)
+  console.log('[4/5] Applying platform executable branding...');
+  if (isWindows) {
+    await embedWindowsIconAndMetadata(outputPath);
+  } else {
+    console.log('  macOS CLI binary (icons stored in assets/fcsweep.icns & assets/icon.png)');
+  }
+
+  // 5. Inject SEA blob via local postject
+  console.log('[5/5] Injecting SEA blob with postject...');
   const postjectBin = join(
     rootDir,
     'node_modules',

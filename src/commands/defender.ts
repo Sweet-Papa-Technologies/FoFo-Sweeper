@@ -46,10 +46,10 @@ export async function runDefenderCommand(
       bus.warn(`Microsoft Defender status unavailable: ${status.error ?? 'unknown'}`);
     } else {
       bus.info(
-        `Microsoft Defender: mode=${status.am_running_mode ?? 'normal'}, realtime=${status.realtime_enabled}, ` +
-          `tamper=${status.tamper_protected}, pua=${status.pua_protection}, signatures=${status.signature_version} (age=${status.signature_age_days}d)`
+        `🛡️  Microsoft Defender · mode=${bus.ui.bold(String(status.am_running_mode ?? 'Normal'))} · realtime=${status.realtime_enabled ? '✅ on' : '❌ off'} · ` +
+          `tamper=${status.tamper_protected ? '🔒 on' : '⚠️ off'} · pua=${status.pua_protection} · signatures=${bus.ui.cyan(String(status.signature_version))} (age=${status.signature_age_days}d)`
       );
-      bus.info(`Recent detections (7d): ${detections.length}`);
+      bus.info(`📋 Recent detections (7d): ${detections.length === 0 ? '✨ 0' : `🚨 ${detections.length}`}`);
     }
     bus.emit('done', {
       command: 'defender --status',

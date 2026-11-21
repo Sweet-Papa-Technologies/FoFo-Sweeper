@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { EXIT_CODES, type ExitCode } from '../constants.js';
+import { EXIT_CODES, VERSION, type ExitCode } from '../constants.js';
 import { resolveCollectorList, runCollectors } from '../collectors/index.js';
 import { runMacosPreflight } from '../collectors/macos/preflight.js';
 import { runWindowsPreflight } from '../collectors/windows/preflight.js';
@@ -8,7 +8,7 @@ import { loadRules } from '../data-loader.js';
 import { runSafetyScannerFallback } from '../defender/safety-scanner.js';
 import { readDefenderDetections, runWindowsDefenderScan } from '../defender/windows-defender.js';
 import type { EventBus } from '../output/events.js';
-import { renderMarkdownReport } from '../output/report.js';
+import { openReportInBrowser, writeSessionReports } from '../output/report-writer.js';
 import { classifyPath } from '../platform/file-facts.js';
 import { isElevated } from '../platform/privilege.js';
 import { buildPlan } from '../remediation/plan.js';
@@ -45,12 +45,19 @@ export async function runScanCommand(
   const session = createSession(sessionRoot, elevated, globalOpts.session);
   bus.attachSession(session.id, session.dir);
 
+  bus.raw(
+    bus.ui.banner(
+      VERSION,
+      `${platform === 'windows' ? 'Windows' : platform === 'macos' ? 'macOS (read-only)' : platform} · ${elevated ? '🛡️ Elevated' : '👤 Standard User'} · Session ${session.id}`
+    )
+  );
+
   if (fallbackUsed) {
     bus.warn(`Default system session root was not writable; using ${sessionRoot}`);
   }
 
   bus.emit('phase_start', { phase: 'preflight', platform, elevated });
-  bus.info(`Session ${session.id} (${session.dir})`);
+  bus.phase('🔍', 'Preflight', 'Checking OS posture, privileges & security engines');
 
   let preflight: PreflightResult;
   if (platform === 'windows') {
@@ -60,7 +67,7 @@ export async function runScanCommand(
   } else {
     preflight = {
       timestamp: new Date().toISOString(),
-      tool_version: '0.1.0',
+      tool_version: VERSION,
       platform,
       hostname: (await import('node:os')).hostname(),
       os_version: process.platform,
@@ -81,8 +88,19 @@ export async function runScanCommand(
     };
   }
 
+  const defNote =
+    platform === 'windows'
+      ? ` · Defender: ${preflight.defender.mode}${preflight.defender.signature_version ? ` (${preflight.defender.signature_version})` : ''}`
+      : preflight.mdm_enrolled
+        ? ' · MDM enrolled'
+        : ' · Personal Mac';
+  bus.info(
+    `  💻 ${bus.ui.bold(preflight.hostname)} · ${preflight.os_version} (${preflight.os_build}, ${preflight.arch})${defNote}`
+  );
+
   // Phase 2: Snapshot (run every collector)
   bus.emit('phase_start', { phase: 'snapshot', collectors });
+  bus.phase('📦', 'Collecting System State', `${collectors.length} collector(s)`);
   const collected = await runCollectors({
     platform,
     collectors,
@@ -125,8 +143,8 @@ export async function runScanCommand(
 
   if (platform === 'windows' && cmdOpts.defenderMode !== 'none') {
     bus.emit('phase_start', { phase: 'defender', scan_type: cmdOpts.defenderMode });
+    bus.phase('🛡️ ', 'Microsoft Signature Scan', `mode=${cmdOpts.defenderMode}`);
     if (!elevated) {
-      // Section 3: scan runs without elevation and marks skipped/partial
       const recentDetections = await readDefenderDetections(24);
       defenderScan = {
         timestamp: new Date().toISOString(),
@@ -145,13 +163,19 @@ export async function runScanCommand(
       writeJsonAtomic(path.join(session.dir, 'preflight.json'), preflight);
       bus.warn('Not elevated: skipping active Defender scan (re-run elevated for Update-MpSignature + Start-MpScan).');
     } else if (preflight.defender.active) {
-      bus.info(`Running Microsoft Defender ${cmdOpts.defenderMode} scan...`);
+      bus.info(`  ⏳ Updating signatures & running Microsoft Defender ${cmdOpts.defenderMode} scan...`);
       defenderScan = await runWindowsDefenderScan(cmdOpts.defenderMode, { updateFirst: true });
+      bus.info(
+        `  ${defenderScan.status === 'ok' ? '✅' : '⚠️ '} Defender ${cmdOpts.defenderMode} scan ${defenderScan.status} · ${defenderScan.detections.length} detection(s)`
+      );
     } else {
       bus.info(
-        `Microsoft Defender is not active (mode=${preflight.defender.mode}); falling back to Microsoft Safety Scanner (detect-only)...`
+        `  ⏳ Defender is ${preflight.defender.mode}; downloading & verifying Microsoft Safety Scanner (detect-only)...`
       );
       defenderScan = await runSafetyScannerFallback(session.dir, cmdOpts.defenderMode);
+      bus.info(
+        `  ${defenderScan.status === 'ok' ? '✅' : '⚠️ '} Safety Scanner ${defenderScan.status} · ${defenderScan.detections.length} detection(s)`
+      );
     }
   }
   writeJsonAtomic(path.join(session.dir, 'defender.json'), defenderScan);
@@ -194,6 +218,7 @@ export async function runScanCommand(
 
   // Phase 4: Score
   bus.emit('phase_start', { phase: 'score', item_count: itemsToScore.length });
+  bus.phase('⚖️ ', 'Scoring & Reporting', `Evaluating ${itemsToScore.length} collected item(s)`);
   const rules = loadRules(globalOpts.rulesPath);
   const findings = scoreAllItems(itemsToScore, {
     rules,
@@ -251,17 +276,20 @@ export async function runScanCommand(
     bus.emit('advisory', { ...adv });
   }
 
-  // Render human report
-  const reportMd = renderMarkdownReport({
-    sessionId: session.id,
-    preflight,
-    findings,
-    defenderScan,
-    advisories,
-    stopConditions,
-  });
-  const reportPath = path.join(session.dir, 'report.md');
-  fs.writeFileSync(reportPath, reportMd, 'utf8');
+  // Write report.md & report.html
+  const reports = writeSessionReports(
+    session.dir,
+    {
+      sessionId: session.id,
+      preflight,
+      findings,
+      snapshot,
+      defenderScan,
+      advisories,
+      stopConditions,
+    },
+    globalOpts.reportFormat
+  );
 
   const counts = {
     malicious: findings.filter((f) => f.tier === 'malicious').length,
@@ -277,16 +305,38 @@ export async function runScanCommand(
     exitCode = EXIT_CODES.FINDINGS_NEED_REVIEW;
   }
 
-  bus.info(
-    `Scan complete: ${counts.malicious} malicious, ${counts.suspicious} suspicious, ${counts.review} review (${counts.clean} clean).`
+  // Pretty terminal advisories, top findings preview, and summary box
+  for (const adv of advisories) {
+    bus.raw('');
+    bus.raw(bus.ui.advisoryBlock(adv));
+  }
+  const preview = bus.ui.findingsPreview(findings, 8);
+  if (preview) bus.raw(preview);
+
+  bus.raw(
+    bus.ui.scanSummary({
+      counts,
+      stopConditions,
+      sessionId: session.id,
+      reportMdPath: reports.mdPath,
+      reportHtmlPath: reports.htmlPath,
+      platform,
+    })
   );
-  bus.info(`Report written to: ${reportPath}`);
+
+  if (globalOpts.openReport && (reports.htmlPath || reports.mdPath)) {
+    const target = reports.htmlPath ?? reports.mdPath!;
+    if (openReportInBrowser(target)) {
+      bus.info(`  🚀 Opened ${target} in your default browser.`);
+    }
+  }
 
   bus.emit('done', {
     command: 'scan',
     session_id: session.id,
     session_dir: session.dir,
-    report_path: reportPath,
+    report_path: reports.mdPath ?? reports.htmlPath ?? null,
+    report_html_path: reports.htmlPath ?? null,
     counts,
     stop_conditions: stopConditions.length,
     exit_code: exitCode,

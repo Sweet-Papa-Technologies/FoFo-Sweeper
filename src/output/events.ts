@@ -1,16 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { NdjsonEvent, NdjsonEventType } from '../types.js';
+import { shouldUseColor, TerminalUI } from './ui.js';
 
 export class EventBus {
-  private readonly jsonMode: boolean;
-  private readonly quiet: boolean;
+  readonly jsonMode: boolean;
+  readonly quiet: boolean;
+  readonly ui: TerminalUI;
   private sessionId?: string;
   private logFilePath?: string;
 
-  constructor(options: { json: boolean; quiet: boolean; sessionId?: string; sessionDir?: string }) {
+  constructor(options: {
+    json: boolean;
+    quiet: boolean;
+    color?: boolean;
+    sessionId?: string;
+    sessionDir?: string;
+  }) {
     this.jsonMode = options.json;
     this.quiet = options.quiet;
+    this.ui = new TerminalUI(options.json ? false : shouldUseColor(options.color));
     this.sessionId = options.sessionId;
     if (options.sessionDir) {
       this.attachSession(options.sessionId ?? path.basename(options.sessionDir), options.sessionDir);
@@ -46,9 +55,18 @@ export class EventBus {
   }
 
   /**
-   * Prints human-readable progress text.
+   * Prints formatted human-readable output.
    * In --json mode, human text goes strictly to stderr so stdout remains pure NDJSON.
    */
+  raw(block: string): void {
+    if (this.quiet || !block) return;
+    if (this.jsonMode) {
+      process.stderr.write(block + '\n');
+    } else {
+      process.stdout.write(block + '\n');
+    }
+  }
+
   info(message: string): void {
     if (this.quiet) return;
     if (this.jsonMode) {
@@ -58,12 +76,19 @@ export class EventBus {
     }
   }
 
+  phase(emoji: string, title: string, detail?: string): void {
+    if (this.quiet) return;
+    this.raw(this.ui.phase(emoji, title, detail));
+  }
+
   warn(message: string): void {
     if (this.quiet && !this.jsonMode) return;
-    process.stderr.write(`WARN: ${message}\n`);
+    const prefix = this.ui.yellow('⚠️  WARN:');
+    process.stderr.write(`${prefix} ${message}\n`);
   }
 
   error(message: string): void {
-    process.stderr.write(`ERROR: ${message}\n`);
+    const prefix = this.ui.red('❌ ERROR:');
+    process.stderr.write(`${prefix} ${message}\n`);
   }
 }

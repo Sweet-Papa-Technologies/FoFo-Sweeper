@@ -548,7 +548,8 @@ export async function runHardenApply(params: {
       status: rec.status,
       message: rec.message,
     });
-    bus.info(`[${rec.status.toUpperCase()}] ${rec.name}: ${rec.message ?? ''}`);
+    const icon = rec.status === 'applied' ? '✅' : rec.status === 'report_only' ? 'ℹ️ ' : rec.status === 'skipped' ? '⏭️ ' : '❌';
+    bus.info(`  ${icon} ${bus.ui.bold(rec.name)}: ${rec.message ?? ''}`);
   };
 
   if (skipDefender) {

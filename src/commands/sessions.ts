@@ -39,16 +39,16 @@ export async function runSessionsCommand(
 
   const sessions = listSessions(sessionRoot);
   if (sessions.length === 0) {
-    bus.info(`No sessions found in ${sessionRoot}.`);
+    bus.info(`📁 No sessions found in ${sessionRoot}. Run \`fcsweep scan\` to start one!`);
   } else {
-    bus.info(`Sessions in ${sessionRoot} (${sessions.length}):`);
+    bus.info(`📁 Sessions in ${bus.ui.dim(sessionRoot)} (${sessions.length}):`);
     for (const s of sessions) {
       const counts = s.findings_summary
-        ? `mal=${s.findings_summary.malicious} susp=${s.findings_summary.suspicious} rev=${s.findings_summary.review}`
+        ? `🚨 ${s.findings_summary.malicious}  🟠 ${s.findings_summary.suspicious}  🔎 ${s.findings_summary.review}`
         : 'no-findings';
       const kb = Math.round(s.size_bytes / 1024);
       bus.info(
-        `  ${s.id}  age=${s.age_days}d  ${counts}  actions=${s.actions_taken ?? 0}  size=${kb}KB`
+        `  🗂️  ${bus.ui.bold(s.id)}  ${bus.ui.dim(`age=${s.age_days}d`)}  ${counts}  ${bus.ui.dim(`actions=${s.actions_taken ?? 0}  size=${kb}KB`)}`
       );
     }
   }
